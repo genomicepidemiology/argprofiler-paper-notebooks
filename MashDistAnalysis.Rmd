@@ -1,0 +1,311 @@
+---
+title: "Mash Kmer sample clustering"
+output: html_notebook
+author: "Patrick Munk"
+---
+
+We have run Mash on a combination of sewage samples with different settings. 
+The results are here on Computerome:
+
+/home/projects/cge/data/projects/other/niki/snakemake/mash_pipeline/results/
+
+An example of a comparable set of sketches is this:
+/home/projects/cge/data/projects/other/niki/snakemake/mash_pipeline/results/21kmer/*/1000000/*/*msh
+
+#Paste the mash sketches as a single file
+mash paste mash_sketch_k21_10e6.msh /home/projects/cge/data/projects/other/niki/snakemake/mash_pipeline/results/21kmer/*/1000000/*/*msh
+
+#Calculate all-vs-all mash distances between sketches
+mash dist mash_sketch_k21_10e6.msh mash_sketch_k21_10e6.msh > mash_dist_k21_10e6.txt
+
+
+Set up environment
+```{r}
+library(tidyverse)
+library(reshape2)
+library(pheatmap)
+
+```
+
+read in and prepare the dataset
+```{r}
+
+mashd = read.delim(file="data/mashdists/old_dist_k21_10e6.txt",h=F)
+#mashd2 = mashd[,1:3]
+#test5 = dcast(mashd2, V2 ~ V1, value.var="V3")
+#test6 = data.frame(test5[,2:ncol(test5)])
+#rownames(test6) = colnames(test6)
+
+```
+
+Let us use the input data from file paths to infer the metadata
+The samples compared were taken from a combination of sources:
+- Copenhagen Sewage site RL
+- Copenhagen Sewage site RA
+- Christians 18 x sampled bucket (also Copenhagen sewage site RA)
+- Global sewage (different countries)
+
+```{r}
+
+library(tidyverse)
+
+AddMetadataToMashDTable = function(mashdist_table) {
+  col_name_prefix = c("sampleGroup", "sampleID", "filename")
+  metadata_1 = stringr::str_split(mashdist_table[,1], "/", simplify = T) %>% as_tibble()
+  metadata_2 = stringr::str_split(mashdist_table[,2], "/", simplify = T) %>% as_tibble()
+  colnames(metadata_1) = paste(col_name_prefix, "1", sep = "")
+  colnames(metadata_2) = paste(col_name_prefix, "2", sep = "")
+  annotated_table = bind_cols(metadata_1, metadata_2) %>%
+    mutate(dist = mashdist_table[,3])
+}
+
+#test7 = AddMetadataToMashDTable(mashd)
+
+sewageMetadata1 = stringr::str_split(mashd[,1], "/", simplify = T) %>%
+    as_tibble()
+colnames(sewageMetadata1) = c("sampleGroup1", "sampleID1", "filename1")
+
+sewageMetadata2 = stringr::str_split(mashd[,2], "/", simplify = T) %>%
+    as_tibble()
+colnames(sewageMetadata2) = c("sampleGroup2", "sampleID2", "filename2")
+
+sewageMashDat = bind_cols(sewageMetadata1, sewageMetadata2) %>%
+  mutate(dist = mashd$V3)
+
+```
+
+Plot data 
+```{r, fig.width=6, fig.height=5}
+
+sewageMashDat %>% 
+  ggplot(aes(sampleID1, sampleID2, fill = dist)) + 
+  geom_tile()
+
+```
+It indeed looks like there is very low mash dist for the bucket samples
+Lets see how predictive being in same group is on mash dist
+
+```{r}
+
+sewageMashDat %>% 
+    mutate(sameGroup = sampleGroup1 == sampleGroup2) %>%
+    filter(sampleID1 != sampleID2) %>%
+    ggplot(aes(dist, fill = sameGroup)) + 
+    geom_density(alpha = 0.25)
+
+```
+
+How about specifically the 18 tech replicates vs the rest?
+
+```{r}
+
+sewageMashDat %>% 
+    mutate(sample1IsBucket = sampleGroup1 == "buckets_trimmed_reads") %>%
+    mutate(sample2IsBucket = sampleGroup2 == "buckets_trimmed_reads") %>%
+    mutate(areBothBucket = sample1IsBucket * sample2IsBucket == 1) %>%
+    filter(sampleID1 != sampleID2) %>%
+    ggplot(aes(dist, fill = areBothBucket, group = areBothBucket)) + 
+    geom_density(alpha = 0.25)
+
+```
+
+
+```{r}
+
+mashd2 = mashd[,1:3]
+mashd2wide = dcast(mashd2, V2 ~ V1, value.var="V3")
+mashd2wide = data.frame(mashd2wide[,2:ncol(mashd2wide)])
+rownames(mashd2wide) = colnames(mashd2wide)
+
+```
+
+Plot the data
+```{r}
+#heatmap
+pheatmap(mashd2wide)
+#Tree
+#plot(hclust(as.dist(test6)), hang=-1)
+#ordination
+plot(prcomp(mashd2wide)$rotation)
+
+```
+
+Very basic PCA plot coloured by sample group
+```{r}
+
+#ordination
+plot(prcomp(mashd2wide)$rotation, col = as.factor(sewageMetadata1$sampleGroup1))
+
+```
+
+Maybe
+```{r}
+
+sewageMashDat %>% 
+  mutate(sameGroup = sampleGroup1 == sampleGroup2) %>%
+  filter(sampleID1 != sampleID2) %>%
+  group_by(sameGroup) %>%
+  summarise(mean = mean(dist), max = max(dist), min = min(dist))
+
+```
+
+Now let us try to generalize the analysis.
+We have a number of different kmer and sketch sizes
+
+```{r}
+
+kmers = paste(c(16,21,27,31),"kmer", sep = "")
+sketchSizes = c(10^3, 10^4, 10^5, 10^6) %>% as.integer()
+sketchSizes = rep(sketchSizes, length(kmers)) %>% sort
+basePath = "/home/projects/cge/data/projects/other/niki/snakemake/mash_pipeline/results/"
+
+analysisPaths = file.path(basePath, kmers, "*", sketchSizes, "*/*msh")
+mashOutNoExt = paste("mash", kmers, sketchSizes, sep ="_")
+mashPasteFiles = paste(mashOutNoExt, ".msh", sep = "")
+madhDistFiles = paste(mashOutNoExt, ".txt", sep = "")
+
+mashPasteCommands = paste("mash", "paste", mashPasteFiles, analysisPaths)
+
+mashDistCommands = paste("mash", "dist", mashPasteFiles, mashPasteFiles, ">", madhDistFiles)
+
+# Write a script file that will genereate required mash distance files
+mash_cmd_filename = "mash_commands.sh"
+file.create(mash_cmd_filename)
+fileConn = file(mash_cmd_filename)
+writeLines(c("module load mash/2.3", 
+             mashPasteCommands, 
+             mashDistCommands), fileConn)
+close(fileConn)
+
+```
+The resulting files were saved to the mashdists/ directory.
+
+Now let us read in the mash distance files and analyze them
+```{r}
+
+MakeMultiMashDistTable = function(dir_with_msh_files) {
+  # Files in input dir
+  dir_files = list.files(dir_with_msh_files)
+  #return(dir_files)
+  # Subset to mash distance files
+  dir_files = dir_files[grep("mash", dir_files)]
+  # Initialize combo object
+  mash_combos = data.frame()
+  for (i in dir_files) {
+    file_path_i = file.path(dir_with_msh_files, i)
+    mash_i = read.delim(file_path_i, h = F)
+    # Add metadata to the mash dist table
+    mash_i = AddMetadataToMashDTable(mash_i)
+    #print(nrow(mash_i))
+    # Extract metadata from file name
+    file_i_metadata = tools::file_path_sans_ext(i) %>% 
+      stringr::str_split("_", simplify = T)
+    #print(dim(mash_i))
+    mash_i = mash_i %>%
+      mutate(kmer = file_i_metadata[2],
+             sketch = file_i_metadata[3])
+    mash_combos = bind_rows(mash_combos, mash_i)
+  }
+  return(mash_combos)
+}
+
+mashCombos = MakeMultiMashDistTable("data/mashdists/")
+
+```
+
+```{r}
+
+mashCombos %>% 
+  ggplot(aes(sampleID1, sampleID2, fill = dist)) + 
+  geom_tile() + 
+  facet_grid(sketch ~ kmer) +
+  theme_void()
+
+```
+
+Let us analyze distance distributions based on sample groups, kmers and sketch sizes
+
+```{r}
+
+mashCombos %>% 
+    mutate(sameGroup = sampleGroup1 == sampleGroup2) %>%
+    filter(sampleID1 != sampleID2) %>%
+    ggplot(aes(dist, fill = sameGroup)) + 
+    geom_density(alpha = 0.25)
+
+```
+
+```{r}
+
+mashCombos %>% 
+    mutate(sameGroup = sampleGroup1 == sampleGroup2) %>%
+    filter(sampleID1 != sampleID2) %>% 
+    mutate(OneIsBucket = sampleGroup1 == "buckets_trimmed_reads" | 
+               sampleGroup2 == "buckets_trimmed_reads") %>%
+    ggplot(aes(dist, fill = sameGroup)) + 
+    geom_density(alpha = 0.25) + 
+    facet_grid(OneIsBucket ~ kmer) + 
+    labs(x = "Mash Distance", y = "Density", title = "Mash Distances stratified by kmer size and if tech replicates group are in")
+
+```
+Can we make a better version of that figure?
+
+```{r}
+
+mashCombos %>% 
+    mutate(sameGroup = sampleGroup1 == sampleGroup2) %>%
+    filter(sampleID1 != sampleID2) %>% 
+    mutate(OneIsBucket = sampleGroup1 == "buckets_trimmed_reads" | 
+               sampleGroup2 == "buckets_trimmed_reads") %>%
+    filter(OneIsBucket == T) %>%
+    ggplot(aes(log(dist+0.01), fill = sameGroup)) + 
+    geom_density(alpha = 0.25) + 
+    facet_grid(sketch ~ kmer) + 
+    labs(x = "Mash Distance", y = "Density", 
+         title = "Mash Distances stratified by kmer and sketch size") +
+    guides(fill=guide_legend(title="Tech. replicates compared?")) + 
+  theme(legend.position="bottom")
+```
+
+Another version
+```{r}
+
+mashCombos %>% 
+    mutate(sameGroup = sampleGroup1 == sampleGroup2) %>%
+    filter(sampleID1 != sampleID2) %>% 
+    mutate(OneIsBucket = sampleGroup1 == "buckets_trimmed_reads" | 
+               sampleGroup2 == "buckets_trimmed_reads") %>%
+    filter(OneIsBucket == T) %>%
+    ggplot(aes(dist, col = sameGroup)) + 
+    geom_bar(stat = "count") + 
+    facet_grid(sketch ~ kmer, scales = "free") +
+    labs(x = "Mash Distance", y = "Density", 
+         title = "Between-dataset mash distances stratified by kmer and sketch size") +
+    guides(fill=guide_legend(title="Tech. replicates compared?")) + 
+    theme_bw() + theme(legend.position="bottom") + scale_x_continuous(breaks = seq(0, 1, by = 0.025))
+
+```
+
+Another version
+```{r}
+
+mashCombos %>% 
+    mutate(sameGroup = sampleGroup1 == sampleGroup2) %>%
+    filter(sampleID1 != sampleID2) %>% 
+    mutate(OneIsBucket = sampleGroup1 == "buckets_trimmed_reads" | 
+               sampleGroup2 == "buckets_trimmed_reads") %>%
+    filter(OneIsBucket == T) %>%
+    ggplot(aes(dist, fill = sameGroup)) + 
+    geom_histogram(col = "black") + 
+    facet_grid(sketch ~ kmer, scales = "free") +
+    labs(x = "Mash Distance",
+         y = "# dataset comparisons",
+         title = "Between-dataset mash distances stratified by kmer and sketch size") +
+    guides(fill=guide_legend(title="Metagenomes of same sample?")) + 
+    theme_bw() + 
+    theme(legend.position="bottom") + 
+    scale_x_continuous(breaks = seq(0, 1, by = 0.025))
+
+ggsave("mashdist_kmer_sketchsize_distributions.png", width = 8, height = 10)
+
+```
