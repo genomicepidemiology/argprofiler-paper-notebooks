@@ -1,2 +1,2 @@
-# argfinder-paper-notebooks
-Supporting notebooks for the ARGfinder manuscript
+# ARGprofiler-paper-notebooks
+Supporting notebooks for the ARGprofiler manuscript
